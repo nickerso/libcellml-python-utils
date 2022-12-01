@@ -20,6 +20,10 @@ def parse_model(filename, strict_mode):
     _dump_issues("parse_model", parser)
     return model
 
+def print_model(model):
+    printer = Printer()
+    s = printer.printModel(model)
+    return s
 
 def validate_model(model):
     validator = Validator()
