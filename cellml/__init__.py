@@ -1,16 +1,27 @@
 from libcellml import Analyser, AnalyserModel, Component, Generator, GeneratorProfile,\
-    Importer, Model, Parser, Printer, Validator
+    Importer, Model, Parser, Printer, Validator, Issue
 
 #
 # Wrappers for the libCellML python API to give some convenient methods.
 #
 
 
+def issue_level_to_string(level):
+    if level == Issue.Level.ERROR:
+        return 'Error'
+    if level == Issue.Level.WARNING:
+        return 'Warning'
+    if level == Issue.Level.MESSAGE:
+        return 'Message'
+    return 'unknown level'
+
+
 def _dump_issues(source_method_name, logger):
     if logger.issueCount() > 0:
         print('The method "{}" found {} issues:'.format(source_method_name, logger.issueCount()))
         for i in range(0, logger.issueCount()):
-            print('    - {}'.format(logger.issue(i).description()))
+            print('    - ({}) {}'.format(issue_level_to_string(logger.issue(i).level()),
+                                         logger.issue(i).description()))
 
 
 def parse_model(filename, strict_mode):
@@ -20,10 +31,12 @@ def parse_model(filename, strict_mode):
     _dump_issues("parse_model", parser)
     return model
 
+
 def print_model(model):
     printer = Printer()
     s = printer.printModel(model)
     return s
+
 
 def validate_model(model):
     validator = Validator()
@@ -42,15 +55,32 @@ def resolve_imports(model, base_dir, strict_mode):
         print("no unresolved imports.")
     return importer
 
+
 def flatten_model(model, importer):
     flat_model = importer.flattenModel(model)
     return flat_model
 
+
 def analyse_model(model):
     analyser = Analyser()
-    a = analyser.analyseModel(model)
+    analyser.analyseModel(model)
     _dump_issues("analyse_model", analyser)
-    return a
+    return analyser
+
+
+def generate_code(analysed_model):
+    print(analysed_model.model().type())
+
+    # generate code from the analysed model
+    g = Generator()
+    profile = GeneratorProfile(GeneratorProfile.Profile.PYTHON)
+    g.setProfile(profile)
+    g.setModel(analysed_model.model())
+    print('header code:')
+    print(g.interfaceCode())
+    print('implementation code:')
+    print(g.implementationCode())
+
 
 def _get_component_node(component):
     node = {
