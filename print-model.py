@@ -4,19 +4,22 @@ import sys
 import cellml
 
 #
-# load a CellML model, resolve any imports, and validate the full model.
+# load a CellML model and print out the components and variables
 #
 # usage:
-#   python resolve-and-validate.py <CellML model filename> [strict]
+#   python print-model.py <CellML model filename> [strict]
 #
 #   strict (optional) = false, use a non-strict parser and importer (i.e., allow CellML 1.0 and 1.1 models)
 #   default is strict mode (i.e., only allow CellML 2.0 models)
 #
 
 
+if len(sys.argv) < 2:
+    print('Usage: print-model.py <CellML model filename> [strict]')
+    exit(-1)
+
 cellml_file = sys.argv[1]
-cellml_file_dir = os.path.dirname(cellml_file)
-print('Working on the CellML file: {}; resolving imports with the context: {}'.format(cellml_file, cellml_file_dir))
+print('Working on the CellML file: {}'.format(cellml_file))
 
 cellml_strict_mode = True
 if len(sys.argv) > 2:
@@ -31,29 +34,14 @@ else:
 
 model = cellml.parse_model(cellml_file, cellml_strict_mode)
 if cellml.validate_model(model) > 0:
-    exit(-1)
-
-importer = cellml.resolve_imports(model, cellml_file_dir, cellml_strict_mode)
-if model.hasUnresolvedImports():
-    print("unresolved imports?")
     exit(-2)
 
-if cellml.validate_model(model) > 0:
-    print('Validation issues found')
-    exit(-3)
+# loop over all the components in the model
+for i in range(0, model.componentCount()):
+    c = model.component(i)
+    print('Component: {}'.format(c.name()))
+    # loop over all the variables in the component
+    for j in range(0, c.variableCount()):
+        v = c.variable(j)
+        print('  -- Variable: {}'.format(v.name()))
 
-print('Model was parsed, resolved, and validated without any issues.')
-
-# need a flattened model for analysing
-flat_model = cellml.flatten_model(model, importer)
-if cellml.validate_model(flat_model) > 0:
-    print('Validation issues found in flattened model')
-    exit(-4)
-
-print('Model was flattened without any issues.')
-
-# this will report any issues that come up in analysing the model to prepare for code generation
-analysed_model = cellml.analyse_model(flat_model)
-
-cellml.generate_code(analysed_model)
-print('Done.')
