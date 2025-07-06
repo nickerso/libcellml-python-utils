@@ -29,12 +29,14 @@ def parse_model(filename, strict_mode):
     parser = Parser(strict_mode)
     model = parser.parseModel(cellml_file.read())
     _dump_issues("parse_model", parser)
+    if parser.errorCount() > 0:
+        return None
     return model
 
 
-def print_model(model):
+def print_model(model, auto_ids=False):
     printer = Printer()
-    s = printer.printModel(model)
+    s = printer.printModel(model, auto_ids)
     return s
 
 
