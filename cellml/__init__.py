@@ -70,18 +70,20 @@ def analyse_model(model):
     return analyser
 
 
-def generate_code(analysed_model):
-    print(analysed_model.model().type())
+def generate_code(analysed_model, print_code=True):
+    if print_code:
+        print(analysed_model.model().type())
 
     # generate code from the analysed model
     g = Generator()
     profile = GeneratorProfile(GeneratorProfile.Profile.PYTHON)
     g.setProfile(profile)
     g.setModel(analysed_model.model())
-    print('header code:')
-    print(g.interfaceCode())
-    print('implementation code:')
-    print(g.implementationCode())
+    if print_code:
+        print('header code:')
+        print(g.interfaceCode())
+        print('implementation code:')
+        print(g.implementationCode())
 
 
 def _get_component_node(component):
