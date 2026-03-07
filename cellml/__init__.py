@@ -1,6 +1,94 @@
 from libcellml import Analyser, AnalyserModel, Component, Generator, GeneratorProfile,\
     Importer, Model, Parser, Printer, Validator, Issue
 
+
+import logging
+import requests
+from pathlib import Path
+from urllib.parse import urljoin
+from posixpath import dirname
+
+log = logging.getLogger("libcellml_python_utils.cellml")
+
+def _fetch_text_file(url: str, check_cellml: bool = False) -> str | None:
+    """
+    Fetch a remote text file and return its contents as a string.
+
+    Parameters
+    ----------
+    url : str
+        URL of the file to retrieve.
+    check_cellml : bool
+        If True, verify the content looks like a CellML XML file.
+        Raises ValueError if the check fails.
+
+    Returns
+    -------
+    str
+        The file contents, or None if the file could not be retrieved.
+
+    Raises
+    ------
+    ValueError
+        If check_cellml is True and the content doesn't look like CellML.
+    """
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+    except requests.exceptions.Timeout:
+        log.error("Timed out fetching: %s", url)
+        return None
+    except requests.exceptions.ConnectionError:
+        log.error("Could not connect to: %s", url)
+        return None
+    except requests.exceptions.HTTPError as e:
+        log.error("HTTP %s fetching %s: %s", e.response.status_code, url, e)
+        return None
+    except requests.exceptions.RequestException as e:
+        log.error("Unexpected error fetching %s: %s", url, e)
+        return None
+
+    # Check the Content-Type header before decoding
+    content_type = response.headers.get("Content-Type", "")
+    if content_type and not any(t in content_type for t in ("text/", "xml", "json")):
+        log.error("Expected a text file but got Content-Type '%s' from: %s", content_type, url)
+        return None
+
+    try:
+        text = response.content.decode(response.encoding or "utf-8")
+    except (UnicodeDecodeError, LookupError) as e:
+        log.error("Could not decode response from %s as text: %s", url, e)
+        return None
+
+    if check_cellml:
+        _assert_is_cellml(text, url)
+
+    log.debug("Fetched %d chars from %s", len(text), url)
+    return text
+
+
+def _assert_is_cellml(text: str, url: str = "") -> None:
+    """
+    Raise ValueError if text doesn't look like a CellML file.
+    Checks for an XML declaration or root element containing the CellML namespace.
+    """
+    # Scan just the start of the file — no need to parse the whole thing
+    head = text[:2048]
+
+    if not head.lstrip().startswith("<"):
+        raise ValueError(f"Not an XML file (does not start with '<'): {url}")
+
+    CELLML_NAMESPACES = (
+        "http://www.cellml.org/cellml/1.0#",
+        "http://www.cellml.org/cellml/1.1#",
+        "http://www.cellml.org/cellml/2.0#",
+    )
+    if not any(ns in head for ns in CELLML_NAMESPACES):
+        raise ValueError(
+            f"XML file does not appear to be CellML (no recognised CellML namespace found): {url}"
+        )
+
+
 #
 # Wrappers for the libCellML python API to give some convenient methods.
 #
@@ -24,6 +112,21 @@ def _dump_issues(source_method_name, logger):
                                          logger.issue(i).description()))
 
 
+def parse_remote_model(url: str, strict_mode: bool = False) -> str | None:
+    log.debug(f'Attempting to fetch and parse a CellML model from {url} with strict_mode={strict_mode}')
+    text = _fetch_text_file(url, check_cellml=True)
+    if text is None:
+        return None
+    log.debug(f'Successfully fetched model text from {url}, now parsing...')
+    parser = Parser(strict_mode)
+    model = parser.parseModel(text)
+    _dump_issues("parse_remote_model", parser)
+    if parser.errorCount() > 0:
+        return None
+    
+    return model
+
+
 def parse_model(filename, strict_mode):
     cellml_file = open(filename)
     parser = Parser(strict_mode)
@@ -45,6 +148,53 @@ def validate_model(model):
     validator.validateModel(model)
     _dump_issues("validate_model", validator)
     return validator.issueCount()
+
+
+def resolve_remote_imports(model, url, strict_mode):
+    importer = Importer(strict_mode)
+
+    _fetch_remote_imports(model, importer, strict_mode, url)
+
+    importer.resolveImports(model, '')
+    _dump_issues("_resolve_remote_imports", importer)
+    if model.hasUnresolvedImports():
+        log.debug(f'Model has unresolved imports')
+    else:
+        log.debug('No unresolved imports.')
+
+    return importer
+
+
+def _fetch_remote_imports(model, importer, strict_mode, base_url, relative_path=""):
+    required_models = model.importRequirements()
+    log.debug(f'Model has {len(required_models)} remote import requirements: {required_models}')
+    base_dir = dirname(base_url) + "/"
+    log.debug(f'Base directory for resolving imports: {base_dir}')
+    for required_model in required_models:
+        log.debug(f'Processing import requirement: {required_model}')
+        imported_model = None
+        import_key = required_model
+        if required_model.startswith("http://") or required_model.startswith("https://"):
+            if importer.library(import_key) is not None:
+                log.debug(f'Model for {required_model} already imported, skipping fetch')
+                continue
+            imported_model = parse_remote_model(required_model, strict_mode)
+        else:
+            rel_dir = dirname(relative_path)
+            import_key = Path(rel_dir) / required_model if rel_dir else required_model
+            log.debug(f'required_model={required_model}, relative_path={relative_path}, import_key={import_key}')
+            required_model_url = urljoin(base_dir, required_model)
+            log.debug(f'Constructed URL for import: {required_model_url}')
+            if importer.library(import_key) is not None:
+                log.debug(f'Model for {required_model} already imported, skipping fetch')
+                continue
+            imported_model = parse_remote_model(required_model_url, strict_mode)
+        if imported_model is not None:
+            log.debug(f'Successfully parsed imported model for requirement: {required_model}')
+            importer.addModel(imported_model, import_key)
+            if imported_model.hasUnresolvedImports():
+                log.debug(f'Imported model for {required_model} has its own imports, resolving them recursively')
+                _fetch_remote_imports(imported_model, importer, strict_mode, required_model_url, import_key)
 
 
 def resolve_imports(model, base_dir, strict_mode):
