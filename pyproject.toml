@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "libcellml-python-utils"
+version = "0.1.0"
+description = "Utility functions for working with libCellML"
+requires-python = ">=3.11, <3.14"
+dependencies = [
+    "libcellml>=0.6.3",
+]   # add any pip-installable deps here
