@@ -7,10 +7,52 @@ import requests
 from pathlib import Path
 from urllib.parse import urljoin
 from posixpath import dirname
+import xml.etree.ElementTree as ET
+
 
 log = logging.getLogger("libcellml_python_utils.cellml")
 
-def _fetch_text_file(url: str, check_cellml: bool = False) -> str | None:
+
+CELLML_NAMESPACES = {
+    "http://www.cellml.org/cellml/1.0#": "1.0",
+    "http://www.cellml.org/cellml/1.1#": "1.1",
+    "http://www.cellml.org/cellml/2.0#": "2.0",
+}
+
+def _get_cellml_version(text: str, url: str = "") -> str | None:
+    """
+    Check the CellML model string and return its version ("1.0", "1.1", or "2.0").
+
+    Returns None if text is not a CellML file.
+    """
+    if text is None:
+        return None
+
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as e:
+        log.error("Failed to parse XML from %s: %s", url, e)
+        return None
+
+    # ElementTree represents namespaced tags as "{namespace}localname"
+    tag = root.tag  # e.g. "{http://www.cellml.org/cellml/2.0#}model"
+
+    if not tag.startswith("{"):
+        log.error("Root element has no namespace — not a CellML file: %s", url)
+        return None
+
+    namespace = tag[1:tag.index("}")]
+    version = CELLML_NAMESPACES.get(namespace)
+
+    if version is None:
+        log.error("Unrecognised root namespace '%s' in: %s", namespace, url)
+        return None
+
+    log.debug("Detected CellML %s at: %s", version, url)
+    return version
+
+
+def _fetch_text_file(url: str, check_cellml: bool = False) -> tuple[str, str] | None:
     """
     Fetch a remote text file and return its contents as a string.
 
@@ -26,6 +68,8 @@ def _fetch_text_file(url: str, check_cellml: bool = False) -> str | None:
     -------
     str
         The file contents, or None if the file could not be retrieved.
+    str
+        The CellML version, or None if the file is not CellML XML
 
     Raises
     ------
@@ -60,33 +104,38 @@ def _fetch_text_file(url: str, check_cellml: bool = False) -> str | None:
         log.error("Could not decode response from %s as text: %s", url, e)
         return None
 
+    version = None
     if check_cellml:
-        _assert_is_cellml(text, url)
+        version = _get_cellml_version(text, url)
+        if version == None:
+            raise ValueError(
+                f"XML file does not appear to be CellML (no recognised CellML namespace found): {url}"
+            )
 
     log.debug("Fetched %d chars from %s", len(text), url)
-    return text
+    return text, version
 
 
-def _assert_is_cellml(text: str, url: str = "") -> None:
-    """
-    Raise ValueError if text doesn't look like a CellML file.
-    Checks for an XML declaration or root element containing the CellML namespace.
-    """
-    # Scan just the start of the file — no need to parse the whole thing
-    head = text[:2048]
+# def _assert_is_cellml(text: str, url: str = "") -> None:
+#     """
+#     Raise ValueError if text doesn't look like a CellML file.
+#     Checks for an XML declaration or root element containing the CellML namespace.
+#     """
+#     # Scan just the start of the file — no need to parse the whole thing
+#     head = text[:2048]
 
-    if not head.lstrip().startswith("<"):
-        raise ValueError(f"Not an XML file (does not start with '<'): {url}")
+#     if not head.lstrip().startswith("<"):
+#         raise ValueError(f"Not an XML file (does not start with '<'): {url}")
 
-    CELLML_NAMESPACES = (
-        "http://www.cellml.org/cellml/1.0#",
-        "http://www.cellml.org/cellml/1.1#",
-        "http://www.cellml.org/cellml/2.0#",
-    )
-    if not any(ns in head for ns in CELLML_NAMESPACES):
-        raise ValueError(
-            f"XML file does not appear to be CellML (no recognised CellML namespace found): {url}"
-        )
+#     CELLML_NAMESPACES = (
+#         "http://www.cellml.org/cellml/1.0#",
+#         "http://www.cellml.org/cellml/1.1#",
+#         "http://www.cellml.org/cellml/2.0#",
+#     )
+#     if not any(ns in head for ns in CELLML_NAMESPACES):
+#         raise ValueError(
+#             f"XML file does not appear to be CellML (no recognised CellML namespace found): {url}"
+#         )
 
 
 #
@@ -112,19 +161,20 @@ def _dump_issues(source_method_name, logger):
                                          logger.issue(i).description()))
 
 
-def parse_remote_model(url: str, strict_mode: bool = False) -> str | None:
+def parse_remote_model(url: str, silent: bool = False, strict_mode: bool = False) -> tuple[str, str] | None:
     log.debug(f'Attempting to fetch and parse a CellML model from {url} with strict_mode={strict_mode}')
-    text = _fetch_text_file(url, check_cellml=True)
+    (text, version) = _fetch_text_file(url, check_cellml=True)
     if text is None:
         return None
     log.debug(f'Successfully fetched model text from {url}, now parsing...')
     parser = Parser(strict_mode)
     model = parser.parseModel(text)
-    _dump_issues("parse_remote_model", parser)
+    if not silent:
+        _dump_issues("parse_remote_model", parser)
     if parser.errorCount() > 0:
         return None
     
-    return model
+    return model, version
 
 
 def parse_model(filename, strict_mode):
@@ -150,51 +200,56 @@ def validate_model(model):
     return validator.issueCount()
 
 
-def resolve_remote_imports(model, url, strict_mode):
+def resolve_remote_imports(model, url, strict_mode, logger=None):
+    if logger is None:
+        logger = log
+
     importer = Importer(strict_mode)
 
-    _fetch_remote_imports(model, importer, strict_mode, url)
+    _fetch_remote_imports(model, importer, strict_mode, url, logger)
 
     importer.resolveImports(model, '')
     _dump_issues("_resolve_remote_imports", importer)
     if model.hasUnresolvedImports():
-        log.debug(f'Model has unresolved imports')
+        logger.debug(f'Model has unresolved imports')
     else:
-        log.debug('No unresolved imports.')
+        logger.debug('No unresolved imports.')
 
     return importer
 
 
-def _fetch_remote_imports(model, importer, strict_mode, base_url, relative_path=""):
+def _fetch_remote_imports(model, importer, strict_mode, base_url, logger, relative_path=""):
     required_models = model.importRequirements()
-    log.debug(f'Model has {len(required_models)} remote import requirements: {required_models}')
+    logger.debug(f'Model has {len(required_models)} remote import requirements: {required_models}')
     base_dir = dirname(base_url) + "/"
-    log.debug(f'Base directory for resolving imports: {base_dir}')
+    logger.debug(f'Base directory for resolving imports: {base_dir}')
     for required_model in required_models:
-        log.debug(f'Processing import requirement: {required_model}')
+        logger.debug(f'Processing import requirement: {required_model}')
         imported_model = None
         import_key = required_model
         if required_model.startswith("http://") or required_model.startswith("https://"):
             if importer.library(import_key) is not None:
-                log.debug(f'Model for {required_model} already imported, skipping fetch')
+                logger.debug(f'Model for {required_model} already imported, skipping fetch')
                 continue
-            imported_model = parse_remote_model(required_model, strict_mode)
+            imported_model, version = parse_remote_model(required_model, strict_mode=strict_mode, silent=True)
         else:
             rel_dir = dirname(relative_path)
             import_key = Path(rel_dir) / required_model if rel_dir else required_model
-            log.debug(f'required_model={required_model}, relative_path={relative_path}, import_key={import_key}')
+            logger.debug(f'required_model={required_model}, relative_path={relative_path}, import_key={import_key}')
             required_model_url = urljoin(base_dir, required_model)
-            log.debug(f'Constructed URL for import: {required_model_url}')
+            logger.debug(f'Constructed URL for import: {required_model_url}')
             if importer.library(import_key) is not None:
-                log.debug(f'Model for {required_model} already imported, skipping fetch')
+                logger.debug(f'Model for {required_model} already imported, skipping fetch')
                 continue
-            imported_model = parse_remote_model(required_model_url, strict_mode)
+            imported_model, version = parse_remote_model(required_model_url, strict_mode=strict_mode, silent=True)
         if imported_model is not None:
-            log.debug(f'Successfully parsed imported model for requirement: {required_model}')
+            logger.debug(f'Successfully parsed imported model for requirement: {required_model}')
+            logger.debug(f'imported_model: {imported_model}; with the name: {imported_model.name()}')
+            logger.debug(f'import_key: {import_key}')
             importer.addModel(imported_model, import_key)
             if imported_model.hasUnresolvedImports():
-                log.debug(f'Imported model for {required_model} has its own imports, resolving them recursively')
-                _fetch_remote_imports(imported_model, importer, strict_mode, required_model_url, import_key)
+                logger.debug(f'Imported model for {required_model} has its own imports, resolving them recursively')
+                _fetch_remote_imports(imported_model, importer, strict_mode, required_model_url, logger, import_key)
 
 
 def resolve_imports(model, base_dir, strict_mode):
@@ -213,14 +268,15 @@ def flatten_model(model, importer):
     return flat_model
 
 
-def analyse_model(model):
+def analyse_model(model, silent=False):
     analyser = Analyser()
     analyser.analyseModel(model)
-    _dump_issues("analyse_model", analyser)
-    return analyser
+    if not silent:
+        _dump_issues("analyse_model", analyser)
+    return analyser, analyser.errorCount()
 
 
-def generate_code(analysed_model, print_code=True):
+def generate_code(analysed_model, print_code=True) -> bool:
     if print_code:
         print(analysed_model.model().type())
 
@@ -229,11 +285,15 @@ def generate_code(analysed_model, print_code=True):
     profile = GeneratorProfile(GeneratorProfile.Profile.PYTHON)
     g.setProfile(profile)
     g.setModel(analysed_model.model())
+    interface_code = g.interfaceCode()
+    implementation_code = g.implementationCode()
     if print_code:
         print('header code:')
-        print(g.interfaceCode())
+        print(interface_code)
         print('implementation code:')
-        print(g.implementationCode())
+        print(implementation_code)
+
+    return True if (len(implementation_code) + len(interface_code)) > 0 else False
 
 
 def _get_component_node(component):
