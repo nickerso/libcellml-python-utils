@@ -161,18 +161,18 @@ def _dump_issues(source_method_name, logger):
                                          logger.issue(i).description()))
 
 
-def parse_remote_model(url: str, silent: bool = False, strict_mode: bool = False) -> tuple[str, str] | None:
+def parse_remote_model(url: str, silent: bool = False, strict_mode: bool = False) -> tuple[str, str] | tuple[None, None]:
     log.debug(f'Attempting to fetch and parse a CellML model from {url} with strict_mode={strict_mode}')
     (text, version) = _fetch_text_file(url, check_cellml=True)
     if text is None:
-        return None
+        return None, None
     log.debug(f'Successfully fetched model text from {url}, now parsing...')
     parser = Parser(strict_mode)
     model = parser.parseModel(text)
     if not silent:
         _dump_issues("parse_remote_model", parser)
     if parser.errorCount() > 0:
-        return None
+        return None, None
     
     return model, version
 
