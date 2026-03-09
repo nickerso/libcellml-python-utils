@@ -10,9 +10,10 @@ include = [
 
 [project]
 name = "libcellml-python-utils"
-version = "0.1.0"
+version = "0.1.1"
 description = "Utility functions for working with libCellML"
 requires-python = ">=3.11, <3.14"
 dependencies = [
     "libcellml>=0.6.3",
+    "requests>=2.32.5",
 ]   # add any pip-installable deps here
