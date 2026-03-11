@@ -69,7 +69,7 @@ def _insert_source_comment(xml_string: str, url: str) -> str:
 
 
 def fetch_flat_model(url, strict_mode, add_ids, output=None):
-    model = cellml.parse_remote_model(url, strict_mode)
+    model, version = cellml.parse_remote_model(url, strict_mode)
     if model is None:
         return None
     if cellml.validate_model(model) > 0:

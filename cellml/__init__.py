@@ -227,18 +227,20 @@ def _fetch_remote_imports(model, importer, strict_mode, base_url, logger, relati
         logger.debug(f'Processing import requirement: {required_model}')
         imported_model = None
         import_key = required_model
+        required_model_url = ""
         if required_model.startswith("http://") or required_model.startswith("https://"):
             if importer.library(import_key) is not None:
                 logger.debug(f'Model for {required_model} already imported, skipping fetch')
                 continue
             imported_model, version = parse_remote_model(required_model, strict_mode=strict_mode, silent=True)
+            required_model_url = required_model
         else:
             rel_dir = dirname(relative_path)
-            import_key = Path(rel_dir) / required_model if rel_dir else required_model
+            import_key = Path(rel_dir) / required_model if rel_dir else Path(required_model).as_posix()
             logger.debug(f'required_model={required_model}, relative_path={relative_path}, import_key={import_key}')
             required_model_url = urljoin(base_dir, required_model)
             logger.debug(f'Constructed URL for import: {required_model_url}')
-            if importer.library(import_key) is not None:
+            if importer.library(str(import_key)) is not None:
                 logger.debug(f'Model for {required_model} already imported, skipping fetch')
                 continue
             imported_model, version = parse_remote_model(required_model_url, strict_mode=strict_mode, silent=True)
@@ -246,7 +248,7 @@ def _fetch_remote_imports(model, importer, strict_mode, base_url, logger, relati
             logger.debug(f'Successfully parsed imported model for requirement: {required_model}')
             logger.debug(f'imported_model: {imported_model}; with the name: {imported_model.name()}')
             logger.debug(f'import_key: {import_key}')
-            importer.addModel(imported_model, import_key)
+            importer.addModel(imported_model, str(import_key))
             if imported_model.hasUnresolvedImports():
                 logger.debug(f'Imported model for {required_model} has its own imports, resolving them recursively')
                 _fetch_remote_imports(imported_model, importer, strict_mode, required_model_url, logger, import_key)
